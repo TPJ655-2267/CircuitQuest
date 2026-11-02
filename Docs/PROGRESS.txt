@@ -63,5 +63,5 @@ Remaining verification / known limitations
 - DFPlayer availability is checked at startup; power it before resetting ESP32.
 - Servo/RGB readiness indicates software command readiness, not physical sensing.
 - GPIO48 may also drive the board's onboard RGB LED; verify actual board layout.
-- hardware/ schematic and connection documents are drafts and may be stale.
-  Validate them against current firmware and actual modules before making a PCB.
+- The hardware/ schematic and connection drafts were removed from the project
+  and current GitHub branch at the user's request. GPIO references above remain.
