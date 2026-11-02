@@ -1,0 +1,67 @@
+CircuitQuest progress - 2026-11-02
+
+Firmware: PlatformIO, Arduino, ESP32-S3-DevKitC-1.
+Build: platformio run. Upload: platformio run --target upload.
+Serial monitor: 115200 baud; use the USB-to-UART connector because RFID uses
+GPIO19 and GPIO20, which are also the native USB pins.
+
+Confirmed by the user during component testing
+- OLED and keypad work; player ID entry starts the game timer.
+- RFID and distance challenge tested; RFID Ohms card accepts the answer.
+- WS2812B ring works after joining external supply negative and ESP32 GND.
+- Servo dashboard control tested; unlock command changed to 180 degrees.
+- MPU motion detection tested; penalty is now 5 seconds per new motion event.
+- DFPlayer audio now works after connection/startup troubleshooting.
+
+Game sequence
+Player ID -> RFID resistance question -> distance -> binary -> wiring ->
+encoder calibration -> encoder challenge -> completion/servo unlock.
+Distance: hold 140-160 mm for 10 seconds.
+Binary: decimal value of 1110001; enter 113 and submit with #.
+Wiring: isolated A1-B1, A2-B2, A3-B3 pairs must be correct for 1 second.
+Encoder: calibrate one complete clockwise turn, then rotate to 90 degrees
+clockwise and press to submit. Bare EC11 supported using input pull-ups.
+
+Current RGB behavior
+- Dashboard On: all 12 pixels low-brightness green. Off: all pixels off.
+- Startup and dashboard game reset command the ring off.
+- RFID wrong/unknown card: red for 2 seconds; correct/employee: green.
+- Distance completion: green for 2 seconds.
+- Binary wrong submission: red for 2 seconds; correct submission: green.
+- Feedback restores the previous dashboard setting after 2 seconds.
+- Wiring and encoder result RGB feedback is not yet connected.
+
+Current GPIO mapping
+OLED + VL53L0X + MPU I2C: SDA8, SCL47; 3V3 supply and common GND.
+Keypad rows: 1,2,5,6; columns: 7,21,38.
+RC522: SCK12, MOSI19, MISO20, SS48; 3V3; RST tied to 3V3; IRQ unused.
+Ring DIN14; external regulated 5V; common GND. 12 WS2812B, GRB, 800kHz.
+Servo signal9; external regulated 5V; common GND. Commanded lock0/unlock180;
+actual mechanical endpoints require calibration with the mechanism detached.
+DFPlayer TX -> ESP32 GPIO17; GPIO18 -> 680-ohm resistor -> DFPlayer RX.
+DFPlayer external 5V and common GND; speaker between SPK1/SPK2, not GND.
+SD card FAT32: /mp3/0001.mp3 GoAhead, 0002.mp3 TryAgain, 0003.mp3 Congrats.
+Wiring A1=39,A2=40,A3=41,B1=42,B2=10,B3=11. No power/GND on puzzle terminals.
+EC11 outer A/B pins -> GPIO15/16, common -> GND; switch -> GPIO4/GND.
+Physical game reset button removed; reset is available on the dashboard.
+
+Dashboard
+ESP32 access point, browser at http://192.168.4.1.
+Login, live timer/status, saved leaderboard/history, CSV export, servo and RGB
+controls, and game reset. Completed results use ESP32 Preferences storage.
+Copy include/dashboard_credentials.example.h to include/dashboard_credentials.h
+and configure a username and SHA-256 password digest before building a fresh
+checkout. The actual credential file is ignored by Git. Wi-Fi credentials are
+currently firmware constants in src/main.cpp; change them for your deployment.
+
+Remaining verification / known limitations
+- Wiring challenge is the next component being connected/tested in this session.
+- Complete bare EC11 calibration, incorrect-angle test and final unlock test.
+- Run the full sequence with all modules connected and stable external power.
+- MPU previously had intermittent I2C read failures; one failed sample currently
+  disables motion sampling until reboot. No automatic reconnection implemented.
+- DFPlayer availability is checked at startup; power it before resetting ESP32.
+- Servo/RGB readiness indicates software command readiness, not physical sensing.
+- GPIO48 may also drive the board's onboard RGB LED; verify actual board layout.
+- hardware/ schematic and connection documents are drafts and may be stale.
+  Validate them against current firmware and actual modules before making a PCB.
