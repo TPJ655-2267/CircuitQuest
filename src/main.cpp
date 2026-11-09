@@ -13,7 +13,6 @@
 #include "dashboard.h"
 #include "game_results.h"
 #include "game_outputs.h"
-#include "dashboard_auth.h"
 #include <SPI.h>
 #include <MFRC522.h>
 #include "rfid_config.h"
@@ -70,6 +69,14 @@ char rfidMessage[22] = {};
 bool employeeRfidBypass = false;
 
 enum class RfidAnswer { Unknown, Ampere, Watts, Ohms, Farad, Employee };
+const char* lastRfidAnswer = "None";
+uint32_t lastRfidAt = 0;
+char lastKey[2] = {};
+uint32_t lastKeyAt = 0;
+bool motionSampleAvailable = false;
+float liveAcceleration[3] = {};
+float liveGyro[3] = {};
+uint32_t lastMotionSampleAt = 0;
 
 RfidAnswer identifyAnswerCard(const byte* uid, byte size) {
     // Require the complete four-byte UID, not a prefix of a longer card UID.
@@ -105,7 +112,6 @@ GameResults gameResults;
 GameOutputs gameOutputs;
 
 WebServer dashboardServer(80);
-DashboardAuth dashboardAuth(dashboardServer);
 bool dashboardReady = false;
 constexpr char DASHBOARD_WIFI_NAME[] = "CircuitQuest";
 constexpr char DASHBOARD_WIFI_PASSWORD[] = "CircuitQuest26";
@@ -246,6 +252,8 @@ bool wrongAnswer = false;
 constexpr uint8_t WIRING_PINS[6] = {12, 13, 14, 7, 8, 9}; // A1,A2,A3,B1,B2,B3
 constexpr uint32_t WIRING_HOLD_MS = 1000;
 bool wiringPairOk[3] = {};
+uint8_t wiringConnections[6] = {};
+uint32_t lastWiringSampleAt = 0;
 bool wiringFault = false;
 bool wiringHolding = false;
 uint32_t wiringStartedAt = 0;
@@ -256,7 +264,8 @@ void releaseWiringPins() {
 }
 
 bool scanWiring() {
-    uint8_t connections[6] = {};
+    auto& connections = wiringConnections;
+    memset(connections, 0, sizeof(connections));
     releaseWiringPins();
     delayMicroseconds(100);
     wiringFault = false;
@@ -283,6 +292,7 @@ bool scanWiring() {
                              connections[pair + 3] == (1U << pair);
         correct = correct && wiringPairOk[pair];
     }
+    lastWiringSampleAt = millis();
     return correct;
 }
 
@@ -512,7 +522,6 @@ const char* dashboardStage() {
 }
 
 void sendDashboardStatus() {
-    if (!dashboardAuth.require()) return;
     uint8_t step = 0;
     if (challenge == Challenge::Distance) step = 1;
     else if (challenge == Challenge::Binary) step = 2;
@@ -534,7 +543,11 @@ void sendDashboardStatus() {
         "{\"player_id\":\"%s\",\"stage\":\"%s\",\"step\":%u,"
         "\"timer_running\":%s,\"elapsed_seconds\":%llu,\"total_seconds\":%llu,"
         "\"penalty_seconds\":%llu,\"motion_events\":%llu,\"motion_alert\":%s,"
-        "\"distance_mm\":%s,\"wiring_correct\":%u,\"encoder_degrees\":%s,"
+        "\"distance_mm\":%s,\"distance_raw_mm\":%u,\"distance_valid\":%s,"
+        "\"distance_status\":%u,\"distance_error\":%d,"
+        "\"distance_hold_ms\":%lu,\"distance_hold_target_ms\":%lu,"
+        "\"distance_min_mm\":%u,\"distance_max_mm\":%u,"
+        "\"wiring_correct\":%u,\"encoder_degrees\":%s,"
         "\"oled_ready\":%s,\"distance_ready\":%s,\"motion_status\":\"%s\",\"audio_ready\":%s,"
         "\"rfid_enabled\":%s,\"rfid_ready\":%s}",
         challenge == Challenge::PlayerId ? "" : playerId, dashboardStage(), step,
@@ -543,7 +556,10 @@ void sendDashboardStatus() {
         static_cast<unsigned long long>(elapsedUs / 1000000ULL + gamePenaltySeconds),
         static_cast<unsigned long long>(gamePenaltySeconds),
         static_cast<unsigned long long>(gamePenaltySeconds / MOTION_PENALTY_SECONDS),
-        motionAlert ? "true" : "false", distanceValue, correctPairs, angleValue,
+        motionAlert ? "true" : "false", distanceValue, distanceMm,
+        distanceValid ? "true" : "false", distanceStatus, distanceError,
+        static_cast<unsigned long>(heldMs), static_cast<unsigned long>(TARGET_HOLD_MS),
+        TARGET_MIN_MM, TARGET_MAX_MM, correctPairs, angleValue,
         oledReady ? "true" : "false", distanceReady ? "true" : "false", motionStatus,
         audioReady ? "true" : "false", RFID_ENABLED ? "true" : "false",
         cardReaderReady ? "true" : "false");
@@ -555,8 +571,58 @@ void sendDashboardStatus() {
     dashboardServer.send(200, "application/json", response);
 }
 
+// Report cached game samples only: dashboard requests never scan or drive pins.
+void sendDashboardInputs() {
+    char motionValues[192] = "null";
+    const bool validMotion = motionReady && motionSampleAvailable &&
+        isfinite(liveAcceleration[0]) && isfinite(liveAcceleration[1]) &&
+        isfinite(liveAcceleration[2]) && isfinite(liveGyro[0]) &&
+        isfinite(liveGyro[1]) && isfinite(liveGyro[2]);
+    if (validMotion) {
+        snprintf(motionValues, sizeof(motionValues),
+                 "{\"acceleration\":[%.3f,%.3f,%.3f],\"gyro\":[%.3f,%.3f,%.3f]}",
+                 liveAcceleration[0], liveAcceleration[1], liveAcceleration[2],
+                 liveGyro[0], liveGyro[1], liveGyro[2]);
+    }
+    const bool keypadActive = challenge == Challenge::PlayerId ||
+        challenge == Challenge::Binary || challenge == Challenge::EncoderCalibration;
+    const char* entry = challenge == Challenge::PlayerId ? playerId :
+        (challenge == Challenge::Binary ? answer : "");
+    char response[2048];
+    // All strings are fixed labels, hexadecimal UIDs, digits, or keypad characters.
+    const int length = snprintf(response, sizeof(response),
+        "{\"stage\":\"%s\",\"motion\":%s,\"motion_age_ms\":%lu,\"motion_alert\":%s,"
+        "\"rfid_ready\":%s,\"rfid_active\":%s,\"rfid_uid\":\"%s\","
+        "\"rfid_answer\":\"%s\",\"rfid_age_ms\":%lu,"
+        "\"keypad_active\":%s,\"last_key\":\"%s\",\"key_age_ms\":%lu,\"entry\":\"%s\","
+        "\"wiring_active\":%s,\"wiring_sampled\":%s,\"wiring_age_ms\":%lu,"
+        "\"wiring_connections\":[%u,%u,%u,%u,%u,%u],\"wiring_pairs\":[%s,%s,%s],"
+        "\"wiring_fault\":%s,\"encoder_count\":%ld,\"encoder_counts_per_turn\":%ld,"
+        "\"encoder_degrees\":%.2f,\"encoder_pressed\":%s}",
+        dashboardStage(), motionValues,
+        static_cast<unsigned long>(millis() - lastMotionSampleAt), motionAlert ? "true" : "false",
+        cardReaderReady ? "true" : "false", challenge == Challenge::Rfid ? "true" : "false",
+        lastCardUid, lastRfidAnswer, static_cast<unsigned long>(millis() - lastRfidAt),
+        keypadActive ? "true" : "false", lastKey,
+        static_cast<unsigned long>(millis() - lastKeyAt), entry,
+        challenge == Challenge::Wiring ? "true" : "false", lastWiringSampleAt ? "true" : "false",
+        static_cast<unsigned long>(millis() - lastWiringSampleAt),
+        wiringConnections[0], wiringConnections[1], wiringConnections[2],
+        wiringConnections[3], wiringConnections[4], wiringConnections[5],
+        wiringPairOk[0] ? "true" : "false", wiringPairOk[1] ? "true" : "false",
+        wiringPairOk[2] ? "true" : "false", wiringFault ? "true" : "false",
+        static_cast<long>(displayedEncoderCount), static_cast<long>(encoderCountsPerTurn),
+        encoderCountsPerTurn > 0 ? encoderPositionInTurn() * 360.0 / encoderCountsPerTurn : 0.0,
+        encoderButtonPressed ? "true" : "false");
+    dashboardServer.sendHeader("Cache-Control", "no-store");
+    if (length < 0 || static_cast<size_t>(length) >= sizeof(response)) {
+        dashboardServer.send(500, "application/json", "{\"error\":\"Inputs unavailable\"}");
+        return;
+    }
+    dashboardServer.send(200, "application/json", response);
+}
+
 void sendDashboardResults() {
-    if (!dashboardAuth.require()) return;
     String response;
     response.reserve(8000);
     response = "{\"capacity\":50,\"storage_ok\":";
@@ -579,7 +645,6 @@ void sendDashboardResults() {
 }
 
 void sendOutputStatus() {
-    if (!dashboardAuth.require()) return;
     char response[240];
     snprintf(response, sizeof(response),
         "{\"servo_ready\":%s,\"servo_unlocked\":%s,\"servo_angle\":%u,\"rgb_ready\":%s,\"rgb_on\":%s}",
@@ -591,7 +656,6 @@ void sendOutputStatus() {
 }
 
 void handleOutputControl() {
-    if (!dashboardAuth.require()) return;
     if (dashboardServer.header("X-CircuitQuest-Control") != "1") {
         dashboardServer.send(403, "application/json", "{\"error\":\"Use the dashboard controls\"}");
         return;
@@ -630,7 +694,6 @@ void handleOutputControl() {
 void resetGame();
 
 void handleDashboardGameReset() {
-    if (!dashboardAuth.require()) return;
     if (dashboardServer.header("X-CircuitQuest-Control") != "1") {
         dashboardServer.send(403, "application/json", "{\"error\":\"Use the dashboard controls\"}");
         return;
@@ -647,18 +710,24 @@ void initializeDashboard() {
         return;
     }
     dashboardServer.on("/", HTTP_GET, []() {
-        if (!dashboardAuth.require(false)) return;
         dashboardServer.sendHeader("Cache-Control", "no-store");
         dashboardServer.sendHeader("X-Frame-Options", "DENY");
         dashboardServer.send_P(200, "text/html; charset=utf-8", DASHBOARD_HTML);
     });
     dashboardServer.on("/api/status", HTTP_GET, sendDashboardStatus);
+    dashboardServer.on("/api/inputs", HTTP_GET, sendDashboardInputs);
     dashboardServer.on("/api/results", HTTP_GET, sendDashboardResults);
-    const char* controlHeaders[] = {"X-CircuitQuest-Control", "Cookie"};
-    dashboardServer.collectHeaders(controlHeaders, 2);
-    dashboardServer.on("/login", HTTP_GET, []() { dashboardAuth.loginPage(); });
-    dashboardServer.on("/login", HTTP_POST, []() { dashboardAuth.login(); });
-    dashboardServer.on("/logout", HTTP_POST, []() { dashboardAuth.logout(); });
+    const char* controlHeaders[] = {"X-CircuitQuest-Control"};
+    dashboardServer.collectHeaders(controlHeaders, 1);
+    // Old bookmarks or already-open login pages lead directly to the dashboard.
+    const auto redirectToDashboard = []() {
+        dashboardServer.sendHeader("Cache-Control", "no-store");
+        dashboardServer.sendHeader("Location", "/");
+        dashboardServer.send(303, "text/plain", "");
+    };
+    dashboardServer.on("/login", HTTP_GET, redirectToDashboard);
+    dashboardServer.on("/login", HTTP_POST, redirectToDashboard);
+    dashboardServer.on("/logout", HTTP_POST, redirectToDashboard);
     dashboardServer.on("/api/outputs", HTTP_GET, sendOutputStatus);
     dashboardServer.on("/api/outputs", HTTP_POST, handleOutputControl);
     dashboardServer.on("/api/game/reset", HTTP_POST, handleDashboardGameReset);
@@ -800,12 +869,18 @@ void resetGame() {
     playerIdLength = 0;
     playerIdRequired = false;
     lastCardUid[0] = '\0';
+    lastRfidAnswer = "None";
+    lastRfidAt = 0;
+    lastKey[0] = '\0';
+    lastKeyAt = 0;
     rfidMessage[0] = '\0';
     employeeRfidBypass = false;
     memset(answer, 0, sizeof(answer));
     answerLength = 0;
     wrongAnswer = false;
     memset(wiringPairOk, 0, sizeof(wiringPairOk));
+    memset(wiringConnections, 0, sizeof(wiringConnections));
+    lastWiringSampleAt = 0;
     wiringFault = false;
     wiringHolding = false;
     wiringStartedAt = 0;
@@ -872,6 +947,10 @@ void loop() {
     serviceAudio();
     // Leave keypad GPIOs untouched until the distance challenge is complete.
     const char key = (challenge == Challenge::PlayerId || challenge == Challenge::EncoderCalibration || challenge == Challenge::Binary) ? keypad.getKey() : NO_KEY;
+    if (key) {
+        lastKey[0] = key;
+        lastKeyAt = millis();
+    }
     const bool encoderChanged = serviceEncoder();
     bool redraw = encoderChanged && (challenge == Challenge::EncoderCalibration || challenge == Challenge::Encoder);
     if (challenge == Challenge::PlayerId && key) {
@@ -903,6 +982,15 @@ void loop() {
                 snprintf(lastCardUid + i * 2, 3, "%02X", cardReader.uid.uidByte[i]);
             }
             const RfidAnswer selected = identifyAnswerCard(cardReader.uid.uidByte, cardReader.uid.size);
+            lastRfidAt = millis();
+            switch (selected) {
+                case RfidAnswer::Ampere: lastRfidAnswer = "Ampere"; break;
+                case RfidAnswer::Watts: lastRfidAnswer = "Watts"; break;
+                case RfidAnswer::Ohms: lastRfidAnswer = "Ohms"; break;
+                case RfidAnswer::Farad: lastRfidAnswer = "Farad"; break;
+                case RfidAnswer::Employee: lastRfidAnswer = "Employee"; break;
+                default: lastRfidAnswer = "Unknown"; break;
+            }
             cardReader.PICC_HaltA();
             cardReader.PCD_StopCrypto1();
             Serial.printf("RFID answer card UID: %s\n", lastCardUid);
@@ -970,6 +1058,14 @@ void loop() {
         lastMotionSample = motionNow;
         sensors_event_t acceleration = {}, gyro = {}, temperature = {};
         if (readMotionSample(acceleration, gyro, temperature)) {
+            motionSampleAvailable = true;
+            lastMotionSampleAt = motionNow;
+            liveAcceleration[0] = acceleration.acceleration.x;
+            liveAcceleration[1] = acceleration.acceleration.y;
+            liveAcceleration[2] = acceleration.acceleration.z;
+            liveGyro[0] = gyro.gyro.x;
+            liveGyro[1] = gyro.gyro.y;
+            liveGyro[2] = gyro.gyro.z;
             const bool rotating = fabsf(gyro.gyro.x) >= MOTION_THRESHOLD_RAD_S ||
                                   fabsf(gyro.gyro.y) >= MOTION_THRESHOLD_RAD_S ||
                                   fabsf(gyro.gyro.z) >= MOTION_THRESHOLD_RAD_S;
