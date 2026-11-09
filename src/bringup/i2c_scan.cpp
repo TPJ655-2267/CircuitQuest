@@ -2,19 +2,19 @@
 #include <Wire.h>
 
 // Step 1 wiring (disconnect USB before changing connections):
-// OLED GND -> GND, SDA -> GPIO8, SCL -> GPIO47.
+// OLED GND -> GND, SDA -> GPIO5, SCL -> GPIO6.
 // OLED VCC -> 3V3 only if this module supports a 3.3 V input.
 // Connect only the OLED for this test. No graphics are drawn.
 namespace {
-constexpr int kSdaPin = 8;
-constexpr int kSclPin = 47;
+constexpr int kSdaPin = 5;
+constexpr int kSclPin = 6;
 constexpr uint32_t kScanIntervalMs = 5000;
 bool busReady = false;
 
 void scanBus() {
     unsigned int found = 0;
     unsigned int errors = 0;
-    Serial.println("Scanning I2C: SDA=8, SCL=47, 100 kHz...");
+    Serial.printf("Scanning I2C: SDA=%d, SCL=%d, 100 kHz...\n", kSdaPin, kSclPin);
     for (uint8_t address = 0x08; address <= 0x77; ++address) {
         Wire.beginTransmission(address);
         const uint8_t result = Wire.endTransmission();

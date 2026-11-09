@@ -20,7 +20,7 @@
 #include <Adafruit_NeoPixel.h>
 
 // Dashboard-controlled 12-pixel WS2812B ring. Common supply/ESP32 ground required.
-constexpr uint8_t DASHBOARD_RGB_PIN = 14;
+constexpr uint8_t DASHBOARD_RGB_PIN = 21;
 constexpr uint16_t DASHBOARD_RGB_COUNT = 12;
 Adafruit_NeoPixel dashboardRgb(DASHBOARD_RGB_COUNT, DASHBOARD_RGB_PIN, NEO_GRB + NEO_KHZ800);
 bool rgbOutputReady = false;
@@ -110,11 +110,11 @@ bool dashboardReady = false;
 constexpr char DASHBOARD_WIFI_NAME[] = "CircuitQuest";
 constexpr char DASHBOARD_WIFI_PASSWORD[] = "CircuitQuest26";
 
-// OLED and VL53L0X: SDA -> GPIO8, SCL -> GPIO47, VCC -> 3V3, GND -> GND.
-// Keypad: R1-R4 -> GPIO1,2,5,6; C1-C3 -> GPIO7,21,38.
+// Shared OLED/VL53L0X/MPU6050 bus: SDA -> GPIO5, SCL -> GPIO6, 3V3 and GND.
+// Keypad: R1-R4 -> GPIO1,2,42,41; C1-C3 -> GPIO40,39,38.
 // Servo command output is prepared for external power setup.
-constexpr uint8_t OLED_SDA = 8;
-constexpr uint8_t OLED_SCL = 47;
+constexpr uint8_t OLED_SDA = 5;
+constexpr uint8_t OLED_SCL = 6;
 Adafruit_SSD1306 oled(128, 64, &Wire, -1);
 Adafruit_VL53L0X distanceSensor;
 Adafruit_MPU6050 motionSensor;
@@ -132,7 +132,7 @@ uint8_t oledAddress = 0;
 // DFPlayer TX -> GPIO17; GPIO18 -> 680-ohm resistor -> DFPlayer RX.
 constexpr uint8_t AUDIO_RX_PIN = 17;
 constexpr uint8_t AUDIO_TX_PIN = 18;
-constexpr uint8_t AUDIO_VOLUME = 15; // DFPlayer range: 0-30.
+constexpr uint8_t AUDIO_VOLUME = 30; // DFPlayer range: 0-30.
 HardwareSerial audioSerial(1);
 DFRobotDFPlayerMini audioPlayer;
 bool audioReady = false;
@@ -184,8 +184,8 @@ char keyMap[KEYPAD_ROWS][KEYPAD_COLS] = {
     {'1', '2', '3'}, {'4', '5', '6'},
     {'7', '8', '9'}, {'*', '0', '#'}
 };
-byte rowPins[KEYPAD_ROWS] = {1, 2, 5, 6};
-byte colPins[KEYPAD_COLS] = {7, 21, 38};
+byte rowPins[KEYPAD_ROWS] = {1, 2, 42, 41};
+byte colPins[KEYPAD_COLS] = {40, 39, 38};
 Keypad keypad(makeKeymap(keyMap), rowPins, colPins, KEYPAD_ROWS, KEYPAD_COLS);
 
 enum class Challenge { PlayerId, Rfid, Distance, Binary, Wiring, EncoderCalibration, Encoder, Complete };
@@ -242,8 +242,8 @@ uint8_t answerLength = 0;
 bool wrongAnswer = false;
 
 // Six isolated terminals; connect only these terminals to each other.
-// RFID uses separate GPIO12/19/20/48; these terminals retain their assignments.
-constexpr uint8_t WIRING_PINS[6] = {39, 40, 41, 42, 10, 11}; // A1,A2,A3,B1,B2,B3
+// Each exposed terminal connects through its own 1k series resistor.
+constexpr uint8_t WIRING_PINS[6] = {12, 13, 14, 7, 8, 9}; // A1,A2,A3,B1,B2,B3
 constexpr uint32_t WIRING_HOLD_MS = 1000;
 bool wiringPairOk[3] = {};
 bool wiringFault = false;
@@ -479,7 +479,7 @@ void initializeMotion() {
 
 bool findOled() {
     uint8_t candidates = 0;
-    Serial.println("Scanning I2C: SDA=GPIO8, SCL=GPIO47");
+    Serial.printf("Scanning I2C: SDA=GPIO%u, SCL=GPIO%u\n", OLED_SDA, OLED_SCL);
     for (uint8_t address = 0x08; address <= 0x77; ++address) {
         Wire.beginTransmission(address);
         if (Wire.endTransmission() == 0) {

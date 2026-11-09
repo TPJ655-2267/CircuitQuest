@@ -2,8 +2,8 @@
 #include <Arduino.h>
 #include <soc/ledc_caps.h>
 
-// Servo: external 5V supply with shared ESP32 GND; signal -> GPIO9.
-constexpr uint8_t SERVO_SIGNAL_PIN = 9;
+// Servo: external 5V supply with shared ESP32 GND; signal -> GPIO47.
+constexpr uint8_t SERVO_SIGNAL_PIN = 47;
 constexpr uint8_t SERVO_PWM_CHANNEL = 0;
 constexpr uint8_t SERVO_PWM_BITS = 14;
 constexpr uint32_t SERVO_PWM_HZ = 50;
