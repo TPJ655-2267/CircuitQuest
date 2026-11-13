@@ -66,9 +66,8 @@ MFRC522 cardReader(RFID_SPI_SS, MFRC522::UNUSED_PIN);
 bool cardReaderReady = false;
 char lastCardUid[21] = {};
 char rfidMessage[22] = {};
-bool employeeRfidBypass = false;
 
-enum class RfidAnswer { Unknown, Ampere, Watts, Ohms, Farad, Employee };
+enum class RfidAnswer { Unknown, Ampere, Watts, Ohms, Farad };
 const char* lastRfidAnswer = "None";
 uint32_t lastRfidAt = 0;
 char lastKey[2] = {};
@@ -87,7 +86,6 @@ RfidAnswer identifyAnswerCard(const byte* uid, byte size) {
         {{0x1C, 0x78, 0x62, 0x34}, RfidAnswer::Watts},
         {{0xEC, 0xB4, 0x77, 0x32}, RfidAnswer::Ohms},
         {{0xDA, 0xFD, 0x6E, 0x32}, RfidAnswer::Farad},
-        {{0x4C, 0x6E, 0x6D, 0x32}, RfidAnswer::Employee},
     };
     for (const auto& card : cards) {
         if (memcmp(uid, card.uid, sizeof(card.uid)) == 0) return card.answer;
@@ -874,7 +872,6 @@ void resetGame() {
     lastKey[0] = '\0';
     lastKeyAt = 0;
     rfidMessage[0] = '\0';
-    employeeRfidBypass = false;
     memset(answer, 0, sizeof(answer));
     answerLength = 0;
     wrongAnswer = false;
@@ -988,16 +985,13 @@ void loop() {
                 case RfidAnswer::Watts: lastRfidAnswer = "Watts"; break;
                 case RfidAnswer::Ohms: lastRfidAnswer = "Ohms"; break;
                 case RfidAnswer::Farad: lastRfidAnswer = "Farad"; break;
-                case RfidAnswer::Employee: lastRfidAnswer = "Employee"; break;
                 default: lastRfidAnswer = "Unknown"; break;
             }
             cardReader.PICC_HaltA();
             cardReader.PCD_StopCrypto1();
             Serial.printf("RFID answer card UID: %s\n", lastCardUid);
-            if (selected == RfidAnswer::Ohms || selected == RfidAnswer::Employee) {
-                employeeRfidBypass = selected == RfidAnswer::Employee;
-                Serial.println(employeeRfidBypass ? "Employee card: RFID question bypassed."
-                                                 : "Correct: resistance is measured in ohms.");
+            if (selected == RfidAnswer::Ohms) {
+                Serial.println("Correct: resistance is measured in ohms.");
                 rfidMessage[0] = '\0';
                 challenge = Challenge::Distance;
                 showChallengeFeedback(true);
